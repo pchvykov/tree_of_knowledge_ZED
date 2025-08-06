@@ -1,0 +1,72 @@
+body {
+    padding: 10px;
+    font-family: sans-serif;
+    background-color: #f5f5f5;
+}
+
+h2 {
+    color: #333;
+    margin-bottom: 20px;
+}
+
+#graphContainer {
+    background-color: white;
+    border: 2px solid #ddd;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+#graphSVG {
+    display: block;
+    background-color: #fafafa;
+}
+
+/* Node styling */
+.nodes circle {
+    stroke: #fff;
+    stroke-width: 2px;
+    cursor: pointer;
+    transition: r 0.2s;
+}
+
+.nodes circle:hover {
+    stroke-width: 3px;
+    r: 8;
+}
+
+/* Link styling */
+.links line {
+    stroke-opacity: 0.6;
+}
+
+/* Text labels */
+.nodes text {
+    font-family: Arial, sans-serif;
+    font-size: 12px;
+    fill: #333;
+    pointer-events: none;
+    user-select: none;
+}
+
+/* Info section */
+#info {
+    background-color: white;
+    padding: 15px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+#info p {
+    margin: 5px 0;
+}
+
+#info span {
+    font-weight: bold;
+    color: #2c3e50;
+}
+
+#status {
+    color: #27ae60;
+}

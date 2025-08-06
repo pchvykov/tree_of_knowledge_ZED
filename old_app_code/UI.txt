@@ -1,0 +1,20 @@
+UI:--------------
+Ctrl+... - editing controls
+ +Del (or +Bcksp) - delete selected node/link
+ +Click & drag to node - create new link
+ +Click & drag to empty space - create new linked node
+ +Click & drag to link - create new link and derivation node
+Shift+Enter in text edit box - update DB (so update and view node text)
+Dbl-Click - create/edit node
+Click - select node/link
+R-Click - fix node
+Ctrl+C and Ctrl+V - copy and paste node/link data onto another one (replaces whatever is there; doesn't not save automatically)
+Ctrl+Z and Ctrl+Y - undo/redo when in text-editor box
+Ctrl+[/] - change link/node type
+Ctrl+ -/= - decrease / increase size
+Ctrl+ O - orient link
+Ctrl+ R - reverse link direction
+Zoom in / out, and then press space-bar to redraw the nodes shown
+
+Note:=======
+Unoriented links of type "theorem" try to orient orthogonal to flow (two statements are considered "equivalent", so should be on same level)

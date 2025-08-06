@@ -1,0 +1,120 @@
+<template name="nodeOptions">
+  <div id="editPopup">
+
+    <!-- <div class="modal-header"> -->
+      <h2 class="modal-title">Add/edit node</h2>
+    <!-- </div> -->
+
+    <!-- <div class="modal-body"> -->
+    <form>
+    {{#with node}}
+      Node Title: <input type="text" id="title" value={{title}}><br>
+      <select id="type">
+<!--         <option value="assumption">Assumption</option>
+        <option value="definition">Definition</option>
+        <option value="statement">Statement</option>
+        <option value="example">Example</option>
+        <option value="epmirical">Empirical</option>
+        <option value="concept">Concept</option>
+        <option value="derivation">Derivation</option> -->
+      </select>
+      &emsp;
+      Importance:<input type="number" id="importance" style="width: 100px" value={{importance}}>
+    <br><br>
+      <label for="content">Content (Shift+Enter to update)</label><br>
+      <textarea id="content" rows=3 value={{text}}></textarea>
+    {{/with}}
+    </form>
+    <!-- </div> -->
+
+    <div class="modal-footer"> <!--type=submit makes it trigger on enter-->
+      <button type="button" class="btn btn-primary" id="save">Save</button>
+        <button type="button" class="btn btn-default" id="cancel" data-dismiss="modal">Cancel</button>
+    </div>
+  </div>
+</template>
+
+<!-- Content popup: -->
+<template name="nodeContent">
+  <div id="contentPopup">
+    <a href="#" id="close" style="float:right">&times;</a>
+    {{#mathjax}}
+    <h2>{{selected.title}}
+    <!-- <button aria-label="close" style="float: right">&times;</button> -->
+    </h2>
+    {{#with selected}}
+    <div id="nodeBody">
+    <h3>
+    {{type}}
+    &emsp;
+    {{importance}}
+    </h3>
+    <!-- <p style="white-space: pre-wrap">
+      {{text}}
+    </p> -->
+    <p style="white-space: pre-wrap" class="nodeText">
+      {{{formattedText}}}
+    </p>
+    </div>
+    {{/with}}
+    {{/mathjax}}
+  </div>
+</template>
+
+
+<template name="linkOptions">
+  <div id="editPopup">
+
+    <!-- <div class="modal-header"> -->
+      <h4 class="modal-title">Add/edit link</h4>
+    <!-- </div> -->
+
+    <!-- <div class="modal-body"> -->
+    {{#with link}}
+    <form>
+      <select id="type">
+<!--         <option value="theorem">Theorem</option>
+        <option value="conjecture">Conjecture</option>
+        <option value="related">Related</option>
+        <option value="specialCase">Special Case</option> -->
+      </select>
+      &emsp;
+      Strength:<input type="number" id="importance" style="width: 100px" value={{strength}}>
+      &emsp;
+      Oriented: <input type="checkbox" id="oriented">
+      <span>flip:<input type="checkbox" id="flip">
+      </span>
+    <br><br>
+      <label for="content">Content</label><br>
+      <textarea id="content" rows="3" value={{text}}></textarea>
+    </form>
+    <!-- </div> -->
+    {{/with}}
+    <div class="modal-footer">
+      <button type="button" class="btn btn-primary" id="save">Save</button>
+        <button type="button" class="btn btn-default" id="cancel">Cancel</button>
+    </div>
+
+  </div>
+</template>
+
+<!-- Link popup: -->
+<template name="linkContent">
+  <div id="contentPopup">
+    <a href="#" id="close" style="float:right">&times;</a>
+    {{#mathjax}}
+    {{#with selected}}
+    <div id="linkBody">
+    <h3>
+    {{type}}
+    &emsp;
+    {{strength}}
+    </h3>
+    <p style="white-space: pre-wrap">
+      {{text}}
+    </p>
+    </div>
+    {{/with}}
+    {{/mathjax}}
+  </div>
+</template>

@@ -1,0 +1,73 @@
+#contentPopup {
+    position: absolute;
+    width:400px;
+    height:400px;
+    resize: both;
+    background-color: #fff;
+    overflow: hidden;
+    border: 1px #ccc solid;
+    border-radius: 6px;
+    box-shadow: #333 2px 2px 4px;
+    padding: 8px;
+    font-family: arial, helvetica, sans-serif;
+    /*font-size: 1em;*/
+    z-index: 2001;
+}
+#contentPopup #nodeBody {
+    height: calc(100% - 50px);
+    width: 100%;
+    overflow-y: auto;
+}
+#contentPopup #linkBody {
+	height: 100%;
+	width: 100%;
+    overflow-y: auto;
+}
+h2{
+	margin-top: 5px;
+}
+#close {
+    position: absolute;
+    right: 0.8em;
+    font-size: 3em;
+}
+
+#editPopup {
+    position: absolute;
+    width:460px;
+    /*height:400px;*/
+    resize: both;
+    background-color: #fff;
+    overflow-y: auto;
+    border: 1px #ccc solid;
+    border-radius: 6px;
+    box-shadow: #333 2px 2px 4px;
+    padding: 8px;
+    font-family: arial, helvetica, sans-serif;
+    /*font-size: 1em;*/
+    z-index: 2002;
+}
+
+#editPopup #content {
+    width: 100%;
+    font-size: 1em;
+    /*height: 100%;*/
+    /*height: calc(100% - 70px);*/
+}
+
+input
+{
+    font-size:1em;
+}
+input[type=checkbox]
+{
+  /* Double-sized Checkboxes */
+  -ms-transform: scale(2); /* IE */
+  -moz-transform: scale(2); /* FF */
+  -webkit-transform: scale(2); /* Safari and Chrome */
+  -o-transform: scale(2); /* Opera */
+  padding: 10px;
+}
+input[type=checkbox]:not(:checked) ~ span {
+   display: none;
+}

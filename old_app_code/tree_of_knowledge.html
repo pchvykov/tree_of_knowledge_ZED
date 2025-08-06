@@ -1,0 +1,68 @@
+<!-- SET METEOR_OFFLINE_CATALOG=1 meteor -->
+<head>
+  <title>tree_of_knowledge</title>
+  <meta charset="utf-8"/>
+
+</head>
+
+<body>
+  {{> graph}}
+
+
+<!-- {{> appDumpUI advanced=true}} -->
+</body>
+
+<template name="graph">
+	<h2>
+  <span id="pgTitle"> </span>
+  <select id="availGraphs"></select>
+  <!-- <form id="ribbon"> -->
+  &emsp;
+  <span id="notifications"></span>
+  </h2>
+  <h3>
+  <input type="button" id="new" value="new"/>
+  <input type="button" id="rename" value="rename"/>
+  <input type="button" id="delete" value="delete"/>
+  &emsp;
+  <span> Server:
+  <input type="button" id="srvBckup" value="Backup" />
+  <input type="button" id="srvRestore" value="Restore" />
+  </span>
+  &emsp;
+  <span> Local:
+  <input type="button" id="cltBckup" value="Download" />
+  <label class="fileContainer">
+      <input type="button" value="Upload" /> <!-- just for show -->
+      <input type="file" id="cltRestore" />
+  </label>
+  </span>
+  </h3>
+  <span>
+  <label class="fileContainer">
+      <input type="button" value="Load Metamath" /> <!-- just for show -->
+      <input type="file" id="loadMetamath" />
+  </label> 
+  Graph_density:<input type="text" size="3" onkeypress="return event.charCode >= 46 &&  event.charCode <= 57" id="linkDistMult" value="100.4"/>
+  Lk_long_Str:<input type="text" size="3" onkeypress="return event.charCode >= 46 &&  event.charCode <= 57" id="linkStrInput" value="30"/>
+  Lk_short_Str:<input type="text" size="3" onkeypress="return event.charCode >= 46 &&  event.charCode <= 57" id="linkSStrInput" value="2.1"/>
+  Lk_orient:<input type="text" size="3" onkeypress="return event.charCode >= 46 &&  event.charCode <= 57" id="linkOrtInput" value="1.1"/>
+  Charge:<input type="text" size="3" onkeypress="return event.charCode >= 46 &&  event.charCode <= 57" id="ChargeInput" value="6.1"/>
+  <!-- ChargeDist:<input type="text" size="3" onkeypress="return event.charCode >= 46 &&  event.charCode <= 57" id="chrgDistInput" value="100"/> -->
+  Gravity:<input type="text" size="3" onkeypress="return event.charCode >= 46 &&  event.charCode <= 57" id="gravInput" value="15"/>
+  Size:<input type="text" size="3" onkeypress="return event.charCode >= 46 &&  event.charCode <= 57" id="sizeInput" value="1.5"/>
+  Phantom charges field:<input type="text" size="3" onkeypress="return event.charCode >= 46 &&  event.charCode <= 57" id="phChInput" value="90.05"/>
+  <input type="button" id="randomize" value="Randomize x,y vis nds!"/> <!-- only the nodes shown -->
+  <input type="button" id="resetCrds" value="Reset x,y ALL nd"/> <!-- all nodes in current graph -->
+  <input type="button" id="calcGrWeights" value="Calc Graph Weights"/>
+  <input type="button" id="calcZoom" value="CalcConn for Zoom"/>
+	</span>
+	<div class="canvas" id="graphCanvas">
+		<svg id="graphSVG"></svg>
+    {{#mathjax}}
+    <div id="allTooltips"></div>
+    {{/mathjax}}
+	</div>
+  Last updated: {{lastUpdate}}
+  
+</template>

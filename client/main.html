@@ -1,0 +1,54 @@
+<head>
+    <title>Tree of Knowledge</title>
+</head>
+
+<body>
+    <div
+        style="
+            margin-bottom: 15px;
+            padding: 10px;
+            background-color: #f0f0f0;
+            border: 1px solid #ccc;
+        "
+    >
+        <strong>Mode:</strong>
+        <label>
+            <input type="radio" name="mode" value="user" checked /> User Mode
+        </label>
+        <label style="margin-left: 15px">
+            <input type="radio" name="mode" value="admin" /> Admin Mode
+        </label>
+        <span
+            id="modeStatus"
+            style="margin-left: 20px; font-weight: bold; color: #333"
+            >(User)</span
+        >
+    </div>
+
+    <h2>Tree of Knowledge - Test Graph</h2>
+
+    <div id="graphContainer">
+        <svg id="graphSVG" width="800" height="600"></svg>
+    </div>
+
+    <div id="info">
+        <p>Status: <span id="status">Loading...</span></p>
+        <div style="margin-top: 10px; font-size: 14px">
+            <strong>Instructions:</strong>
+            <div id="userInstructions">
+                <ul>
+                    <li>Drag nodes to move them (view only)</li>
+                    <li>Double-click nodes to view content</li>
+                </ul>
+            </div>
+            <div id="adminInstructions" style="display: none">
+                <ul>
+                    <li>Click empty space to create new nodes</li>
+                    <li>Double-click nodes to edit content</li>
+                    <li>Drag nodes to move them (saves to database)</li>
+                    <li>Ctrl+drag from one node to another to create links</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</body>

@@ -1,0 +1,42 @@
+Pavel ==============
+
++ Check graph scale invariance (zoom in or out, dynamics should remain the same - though perhaps with time rescaling?)
++ Node types as shapes: definition, example, statement
+Node colors to use for clustering or highlighting
++ Edge dashes scale with line width
+Show empty node when no text is added 
++ Markdown in the descriptions
+In text ref to parents
+- Font size prop to node size? No - too confusing how to scale with zoom
+Tooltips at edge of screen on link hover
+Delay popup to allow double-click
+When hiding nodes, keep all that have significant repulsion field on-screen (e.g., top N)
+
+Node size / importance is relative to the question / problem at hand
+
+### Node types
+Concept vs field...?
+Method shape looks like sideways diamond
+
+### Link types
+Rejects, opposite of, implies by negation
+Special case and used in should look different
+
+Matthieu =========
+2 panel
+Masking part of the graph: hand built, filter based on tags, 
+Give different perspectives on the same set of elements
+Rattling for math or for physics
+So don't have to write different intros for different audiences saying the same thing
+Importance value given differentially compared to how much this node is used on average globally vs in this particular graph (e.g., basic theorems)
+Show content on hover (somehow)
+
+1) [web search] Search, show node and its neighbors, then click nodes or links and add those nodes and their neighbors, fading out nodes far back
+2) [GPS] enter source and target node, and show path between them
+3) [Wikipedia] have people tried to visualize wikipedia? How? Anything useful?
+4) [CarBravo] Chat interface to navigate the graph
+
+Can we use graphs to generate exercises / problems? (How to connect these two nodes?
+Start with linear traversal, then use graph as reference and to better understand. What makes it interesting are the connections, not the linear. Or start by stating your goal, and explain everything in that context
+
+Authors can use universal nodes, but build their own graphs - which can then be overlapped for students searching for the path

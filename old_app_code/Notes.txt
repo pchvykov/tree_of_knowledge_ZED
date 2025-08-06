@@ -1,0 +1,77 @@
+Generating forces
+
+
+ToDo:
++Why disconnected visNodes sometimes? (Biimpri - sylibr - bitri)
+Effective connectivity - include horizontal
++Gravity - quadratic or quartic? Size-dependent?
+Zooming in: children whom this is one of 2 most important parents?
++Panning at large zoom - redo zoom in calculation
+Change graph weights
+
++possibility to adjust newly created nodes/links
+undo/redo stack on server operations (https://github.com/JackAdams/meteor-undo-redo)
++Shift-enter updates DB but not content popup
+link: implies in most cases
+highlighting links on rollover - go further
+highlighting nodes on rollover - all by color?
+Optimize tick-function for speed
+chargeDistance??
+Make sure all types are correct when going from edit popup to DB
+Check parameters: symmetrization of connMx, rounding of weak eff links, 
+Ctrl+ +/-  - makes unoriented links oriented
+(Only in Meteor 1.6 - Mongo3.4) $graphLookup, $aggregate, indexing?
+
++fix gravity
++Link style changing on type change - immediate
++resize tooltips
++Ctrl + [+/-] - resize nodes
++Ctrl + O / R - orient link
++Ctrl + Up/Down - change type
++Select node/link on creation 
++Make example links oriented by default
++Set default link weight based on node importance
++Default links to oriented in general(?)
+Make "related" links easier to catch
++Small nodes force away from center??
+-orienting links shouldn't change their length (currently makes them longer)
+add Link repulsion? (link-node repulsion?)
+"related" links weaker than theorems
++highlight child and parent nodes
+
+overall styling
+images support
+nodes fixing?
+zoom behavior (show/hide nodes)
+
+Not ToDo:
+node size adjust with Ctrl-zoom: non-integer size values are confusing (can fix), updating DB is confusing (at force.end), need to disable zoom behavior (not sure how)
+
+
+
+
+Launching online:
+(already good now) - remove the local mrt:mathjax and MathJax installations - let it use latest MathJax code directly from their server.
+
+Thoughts----------------------------------------------------------
+Type of node determined by:
+Graph structure: assumption
+Link label: example
+Node label: definition, empirical, concept
+
+Tooltips pros/cons:
+			pro				con
+-meteor lookback	simple, mathjax			only 1, not smooth
+-SVG text		smooth move/zoom		no mathjax, must resize
+-foreign div		mathjax, easy styling		must update
+
+pros: Creating new collection ----v---- name labels in one collection
+clean and complete seperation
+if anything goes wrong, delete coll
+faster publish
+					meteor-friendly
+					easy to combine trees
+
+
+Marketing:--------------
+-a generalization of books (books are a special case of this - with linear tree)
