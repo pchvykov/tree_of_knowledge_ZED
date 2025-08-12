@@ -1,10 +1,5 @@
 import { ReactiveVar } from "meteor/reactive-var";
-
-// Inline constants to fix import issues
-const MODES = {
-  USER: "user",
-  ADMIN: "admin",
-};
+import { MODES } from "../../lib/constants.js";
 
 /**
  * UI State Management Helper
@@ -168,7 +163,7 @@ export class UIState {
     }
   }
 
-  // Keyboard Handling
+  // Keyboard Handling (simplified - main keyboard handling is in GraphRenderer)
   setupKeyboardHandlers() {
     document.addEventListener("keydown", (event) => {
       this.handleKeyPress(event);
@@ -178,7 +173,7 @@ export class UIState {
   handleKeyPress(event) {
     if (!this.isAdminMode()) return;
 
-    // Ctrl+Delete or Cmd+Delete (no confirmation)
+    // Only handle delete and escape here - other keys handled by GraphRenderer
     if (
       (event.ctrlKey || event.metaKey) &&
       (event.key === "Delete" || event.key === "Backspace")
@@ -223,6 +218,9 @@ export class UIState {
     document.querySelectorAll('input[name="mode"]').forEach((radio) => {
       radio.removeEventListener("change", this.setMode);
     });
+
+    // Remove keyboard event listener
+    document.removeEventListener("keydown", this.handleKeyPress);
   }
 }
 

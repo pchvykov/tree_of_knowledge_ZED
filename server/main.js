@@ -42,13 +42,14 @@ Meteor.startup(async () => {
       zoomLvl: NODE_DEFAULTS.ZOOM_LEVEL,
     });
 
-    // Create test links
+    // Create test links with different orientations
     await Links.insertAsync({
       source: node1,
       target: node2,
       graph: GRAPH_CONFIG.DEFAULT_GRAPH,
       type: "implies",
       strength: 5,
+      oriented: true,
     });
 
     await Links.insertAsync({
@@ -57,6 +58,17 @@ Meteor.startup(async () => {
       graph: GRAPH_CONFIG.DEFAULT_GRAPH,
       type: "implies",
       strength: 4,
+      oriented: true,
+    });
+
+    // Add a theorem link (unoriented by default)
+    await Links.insertAsync({
+      source: node1,
+      target: node3,
+      graph: GRAPH_CONFIG.DEFAULT_GRAPH,
+      type: "theorem",
+      strength: 3,
+      oriented: false,
     });
 
     console.log("Test data added successfully");

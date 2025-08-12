@@ -1,10 +1,7 @@
 import { Meteor } from "meteor/meteor";
 import { Tracker } from "meteor/tracker";
 import { Nodes, Links } from "../lib/collections.js";
-// Inline constants to fix import issues
-const GRAPH_CONFIG = {
-  DEFAULT_GRAPH: "test",
-};
+import { GRAPH_CONFIG } from "../lib/constants.js";
 import { GraphRenderer } from "./helpers/d3-graph.js";
 import { uiState } from "./helpers/ui-state.js";
 
@@ -28,76 +25,38 @@ class TreeOfKnowledgeApp {
   }
 
   setupEventHandlers() {
-    // UI State event handlers
-    uiState.on("modeChanged", (mode) => {
-      if (this.graphRenderer) {
-        this.graphRenderer.setAdminMode(uiState.isAdminMode());
-      }
-    });
+    // UI State event handlers with direct method references
+    uiState.on("modeChanged", () =>
+      this.graphRenderer?.setAdminMode(uiState.isAdminMode()),
+    );
+    uiState.on("nodeSelected", (nodeData) =>
+      this.graphRenderer?.selectNode(nodeData),
+    );
+    uiState.on("linkSelected", (linkData) =>
+      this.graphRenderer?.selectLink(linkData),
+    );
+    uiState.on("selectionCleared", () =>
+      this.graphRenderer?.clearAllSelections(),
+    );
+    uiState.on("deleteNode", this.deleteNode.bind(this));
+    uiState.on("deleteLink", this.deleteLink.bind(this));
 
-    uiState.on("nodeSelected", (nodeData) => {
-      if (this.graphRenderer) {
-        this.graphRenderer.selectNode(nodeData);
-      }
-    });
-
-    uiState.on("linkSelected", (linkData) => {
-      if (this.graphRenderer) {
-        this.graphRenderer.selectLink(linkData);
-      }
-    });
-
-    uiState.on("selectionCleared", () => {
-      if (this.graphRenderer) {
-        this.graphRenderer.clearAllSelections();
-      }
-    });
-
-    uiState.on("deleteNode", (nodeData) => {
-      this.deleteNode(nodeData);
-    });
-
-    uiState.on("deleteLink", (linkData) => {
-      this.deleteLink(linkData);
-    });
-
-    // Set up keyboard handlers
     uiState.setupKeyboardHandlers();
   }
 
   initializeRenderer() {
-    if (this.graphRenderer) {
-      this.graphRenderer.destroy();
-    }
+    this.graphRenderer?.destroy();
 
     this.graphRenderer = new GraphRenderer("#graphSVG", {
       isAdminMode: uiState.isAdminMode(),
-      onNodeClick: (nodeData) => uiState.selectNode(nodeData),
-      onLinkClick: (linkData) => uiState.selectLink(linkData),
-      onNodeDoubleClick: (nodeData) => {
-        if (uiState.isAdminMode()) {
-          this.editNode(nodeData);
-        } else {
-          this.viewNode(nodeData);
-        }
-      },
-      onEmptySpaceClick: (x, y, sourceNodeId) => {
-        if (uiState.isAdminMode()) {
-          if (sourceNodeId) {
-            this.createLinkedNode(x, y, sourceNodeId);
-          } else {
-            this.createNode(x, y);
-          }
-        } else {
-          uiState.clearSelections();
-        }
-      },
-      onNodeDragEnd: (nodeId, x, y) => {
-        this.updateNodePosition(nodeId, x, y);
-      },
-      onLinkCreate: (sourceId, targetId) => {
-        this.createLink(sourceId, targetId);
-      },
+      onNodeClick: uiState.selectNode.bind(uiState),
+      onLinkClick: uiState.selectLink.bind(uiState),
+      onNodeDoubleClick: this.handleNodeDoubleClick.bind(this),
+      onEmptySpaceClick: this.handleEmptySpaceClick.bind(this),
+      onNodeDragEnd: this.updateNodePosition.bind(this),
+      onLinkCreate: this.createLink.bind(this),
+      onLinkOrient: this.orientLink.bind(this),
+      onLinkReverse: this.reverseLink.bind(this),
     });
   }
 
@@ -118,92 +77,91 @@ class TreeOfKnowledgeApp {
     });
   }
 
+  // Event Handlers
+  handleNodeDoubleClick(nodeData) {
+    if (uiState.isAdminMode()) {
+      this.editNode(nodeData);
+    } else {
+      alert("Node content: " + nodeData.content);
+    }
+  }
+
+  handleEmptySpaceClick(x, y, sourceNodeId) {
+    if (uiState.isAdminMode()) {
+      sourceNodeId
+        ? this.createLinkedNode(x, y, sourceNodeId)
+        : this.createNode(x, y);
+    } else {
+      uiState.clearSelections();
+    }
+  }
+
   // Database Operations
   createNode(x, y) {
     const content = prompt("Enter content for new node:");
-    if (content !== null && content.trim() !== "") {
-      Meteor.call("createNode", x, y, content.trim(), (error) => {
-        if (error) {
-          console.error("Error creating node:", error);
-        }
-      });
+    if (content?.trim()) {
+      this.callMethod("createNode", x, y, content.trim());
     }
   }
 
   createLinkedNode(x, y, sourceNodeId) {
     const content = prompt("Enter content for new linked node:");
-    if (content !== null && content.trim() !== "") {
-      Meteor.call(
-        "createLinkedNode",
-        x,
-        y,
-        content.trim(),
-        sourceNodeId,
-        (error) => {
-          if (error) {
-            console.error("Error creating linked node:", error);
-          }
-        },
-      );
+    if (content?.trim()) {
+      this.callMethod("createLinkedNode", x, y, content.trim(), sourceNodeId);
     }
   }
 
   editNode(nodeData) {
     const newContent = prompt("Edit node content:", nodeData.content);
     if (newContent !== null && newContent !== nodeData.content) {
-      Meteor.call("updateNodeContent", nodeData._id, newContent, (error) => {
-        if (error) {
-          console.error("Error updating node content:", error);
-        }
-      });
+      this.callMethod("updateNodeContent", nodeData._id, newContent);
     }
-  }
-
-  viewNode(nodeData) {
-    alert("Node content: " + nodeData.content);
   }
 
   updateNodePosition(nodeId, x, y) {
-    Meteor.call("updateNodePosition", nodeId, x, y, (error) => {
-      if (error) {
-        console.error("Error updating node position:", error);
-      }
-    });
+    this.callMethod("updateNodePosition", nodeId, x, y);
   }
 
   createLink(sourceId, targetId) {
-    Meteor.call("createLink", sourceId, targetId, (error) => {
-      if (error) {
-        console.error("Error creating link:", error);
-      }
-    });
+    this.callMethod("createLink", sourceId, targetId);
   }
 
   deleteNode(nodeData) {
-    Meteor.call("deleteNode", nodeData._id, (error) => {
-      if (error) {
-        console.error("Error deleting node:", error);
-      } else {
-        uiState.clearSelections();
-      }
-    });
+    this.callMethod("deleteNode", nodeData._id, () =>
+      uiState.clearSelections(),
+    );
   }
 
   deleteLink(linkData) {
-    Meteor.call("deleteLink", linkData._id, (error) => {
+    this.callMethod("deleteLink", linkData._id, () =>
+      uiState.clearSelections(),
+    );
+  }
+
+  orientLink(linkId, oriented) {
+    this.callMethod("updateLinkOrientation", linkId, oriented);
+  }
+
+  reverseLink(linkId) {
+    this.callMethod("reverseLinkDirection", linkId);
+  }
+
+  // Utility method for Meteor calls
+  callMethod(methodName, ...args) {
+    const callback =
+      typeof args[args.length - 1] === "function" ? args.pop() : null;
+
+    Meteor.call(methodName, ...args, (error) => {
       if (error) {
-        console.error("Error deleting link:", error);
-      } else {
-        uiState.clearSelections();
+        console.error(`Error with ${methodName}:`, error);
+      } else if (callback) {
+        callback();
       }
     });
   }
 
-  // Cleanup
   destroy() {
-    if (this.graphRenderer) {
-      this.graphRenderer.destroy();
-    }
+    this.graphRenderer?.destroy();
     uiState.destroy();
   }
 }

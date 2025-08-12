@@ -40,6 +40,115 @@ h2 {
     stroke-opacity: 0.6;
 }
 
+/* Graph element selection and interaction styles */
+.node_selected {
+    stroke: orange !important;
+    stroke-width: 4px !important;
+}
+
+.link_selected {
+    stroke: orange !important;
+    stroke-width: 4px !important;
+}
+
+.node {
+    stroke: black;
+    stroke-width: 2px;
+}
+
+.link {
+    stroke: #999;
+    stroke-width: 2px;
+    fill: none;
+    transition:
+        stroke-width 0.2s,
+        stroke 0.2s;
+}
+
+/* Oriented (directed) links */
+.link.oriented {
+    stroke: #555;
+    stroke-width: 2.5px;
+}
+
+/* Non-oriented (undirected) links */
+.link:not(.oriented) {
+    stroke: #888;
+    stroke-width: 2px;
+    stroke-dasharray: 2, 2;
+}
+
+/* Arrow marker styling */
+#arrowHead {
+    fill: #555;
+    stroke: none;
+    opacity: 0.8;
+}
+
+/* Different link types */
+.link.theorem {
+    stroke-dasharray: 3, 3;
+}
+
+.link.implies {
+    stroke: #333;
+}
+
+.link.related {
+    stroke: #888;
+    stroke-width: 1.5px;
+}
+
+/* Hover effects for links */
+.link:hover {
+    stroke-width: 3px;
+    stroke: #333;
+}
+
+.link.oriented:hover {
+    stroke: #222;
+}
+
+.link_selected {
+    stroke: orange !important;
+    stroke-width: 4px !important;
+    animation: pulse-link 1.5s infinite;
+}
+
+.link_selected:hover {
+    stroke-width: 5px;
+}
+
+/* Selection animations */
+@keyframes pulse-link {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.7;
+    }
+}
+
+/* Visual indicator for link orientation when selected */
+.link_selected.oriented::after {
+    content: "→";
+    position: absolute;
+    color: orange;
+    font-weight: bold;
+    font-size: 16px;
+}
+
+/* Enhanced arrow visibility for selected oriented links */
+.link_selected.oriented {
+    stroke-dasharray: none !important;
+}
+
+#arrowHead.selected {
+    fill: orange;
+    opacity: 1;
+}
+
 /* Text labels */
 .nodes text {
     font-family: Arial, sans-serif;

@@ -53,6 +53,7 @@ Meteor.methods({
       graph: GRAPH_CONFIG.DEFAULT_GRAPH,
       type: LINK_DEFAULTS.TYPE,
       strength: LINK_DEFAULTS.STRENGTH,
+      oriented: LINK_DEFAULTS.ORIENTED,
     });
     return linkId;
   },
@@ -91,6 +92,28 @@ Meteor.methods({
     return { nodeId, linkId };
   },
 
+  updateLinkOrientation: async function (linkId, oriented) {
+    console.log("Updating link orientation:", linkId, "to", oriented);
+    const result = await Links.updateAsync(linkId, {
+      $set: { oriented: oriented },
+    });
+    return result;
+  },
+
+  reverseLinkDirection: async function (linkId) {
+    console.log("Reversing link direction:", linkId);
+    const link = await Links.findOneAsync(linkId);
+    if (!link) throw new Meteor.Error("Link not found");
+
+    const result = await Links.updateAsync(linkId, {
+      $set: {
+        source: link.target,
+        target: link.source,
+      },
+    });
+    return result;
+  },
+
   deleteNode: async function (nodeId) {
     console.log("Deleting node:", nodeId);
 
@@ -109,5 +132,26 @@ Meteor.methods({
     console.log("Deleting link:", linkId);
     const result = await Links.removeAsync(linkId);
     return result;
+  },
+
+  updateCoordinates: async function (nodes) {
+    console.log("Updating coordinates for", nodes.length, "nodes");
+
+    // Update coordinates for all nodes - exact implementation from old app
+    const updatePromises = nodes.map(async (node) => {
+      if (
+        node._id &&
+        typeof node.x === "number" &&
+        typeof node.y === "number"
+      ) {
+        return await Nodes.updateAsync(
+          { _id: node._id },
+          { $set: { x: node.x, y: node.y } },
+        );
+      }
+    });
+
+    const results = await Promise.all(updatePromises);
+    return results.filter((result) => result !== undefined).length;
   },
 });

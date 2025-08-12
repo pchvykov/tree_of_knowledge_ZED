@@ -27,6 +27,91 @@
 
     <h2>Tree of Knowledge - Test Graph</h2>
 
+    <div
+        style="
+            margin-bottom: 10px;
+            padding: 10px;
+            background-color: #f9f9f9;
+            border: 1px solid #ddd;
+        "
+    >
+        <strong>Physics Controls:</strong>
+        <span style="margin-left: 10px">
+            Graph_density:
+            <input
+                type="text"
+                size="3"
+                id="linkDistMult"
+                value="100.4"
+                style="margin-right: 10px"
+            />
+            Lk_long_Str:
+            <input
+                type="text"
+                size="3"
+                id="linkStrInput"
+                value="30"
+                style="margin-right: 10px"
+            />
+            Lk_short_Str:
+            <input
+                type="text"
+                size="3"
+                id="linkSStrInput"
+                value="2.1"
+                style="margin-right: 10px"
+            />
+            Lk_orient:
+            <input
+                type="text"
+                size="3"
+                id="linkOrtInput"
+                value="1.1"
+                style="margin-right: 10px"
+            />
+            Charge:
+            <input
+                type="text"
+                size="3"
+                id="ChargeInput"
+                value="6.1"
+                style="margin-right: 10px"
+            />
+            Gravity:
+            <input
+                type="text"
+                size="3"
+                id="gravInput"
+                value="15"
+                style="margin-right: 10px"
+            />
+            Size:
+            <input
+                type="text"
+                size="3"
+                id="sizeInput"
+                value="1.5"
+                style="margin-right: 10px"
+            />
+        </span>
+        <br />
+        <span style="margin-top: 5px; display: inline-block">
+            <input
+                type="button"
+                id="randomize"
+                value="Randomize Positions"
+                style="margin-right: 10px"
+            />
+            <input
+                type="button"
+                id="resetCrds"
+                value="Reset All Coordinates"
+                style="margin-right: 10px"
+            />
+            <input type="button" id="restartSim" value="Restart Simulation" />
+        </span>
+    </div>
+
     <div id="graphContainer">
         <svg id="graphSVG" width="800" height="600"></svg>
     </div>
@@ -48,6 +133,11 @@
                     <li>Drag nodes to move them (saves to database)</li>
                     <li>Ctrl+drag from one node to another to create links</li>
                     <li>Click nodes/links to select them (orange highlight)</li>
+                    <li>
+                        Press Ctrl+O to toggle link orientation (show/hide
+                        arrow)
+                    </li>
+                    <li>Press Ctrl+R to reverse link direction</li>
                     <li>
                         Press Ctrl+Delete (or Cmd+Delete) to delete selected
                         items
