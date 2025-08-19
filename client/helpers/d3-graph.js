@@ -94,6 +94,10 @@ export class GraphRenderer {
 
     // Setup keyboard handlers
     this.setupKeyboardHandlers();
+
+    // Bind the UI physics controls (live) so changes affect the running simulation
+    // This reads the input fields in the main HTML and updates force parameters.
+    this.bindPhysicsControls();
   }
 
   setupArrowMarkers() {
@@ -420,17 +424,7 @@ export class GraphRenderer {
       if (typeof node.vx === "undefined") node.vx = 0;
       if (typeof node.vy === "undefined") node.vy = 0;
 
-      // Periodic alpha logging (~once per second): log timestamp, alpha, decay, and current noise tuning
-      const now = Date.now();
-      if (!this._lastAlphaLogTime) this._lastAlphaLogTime = 0;
-      if (now - this._lastAlphaLogTime > 1000) {
-        const alphaVal = this.simulation ? this.simulation.alpha() : 0;
-        const decay = this.simulation ? this.simulation.alphaDecay() : 0;
-        console.log(
-          `[d3-sim] time=${new Date(now).toISOString()} alpha=${alphaVal.toFixed(6)} alphaDecay=${decay.toFixed(6)} noiseStrength=${this.noiseStrength.toFixed(3)} noiseFreq=${this.noiseFrequency} forceRun=${this.forceRun}`,
-        );
-        this._lastAlphaLogTime = now;
-      }
+      // Alpha logging disabled to reduce console noise.
 
       // Noise for annealing (scaled by alpha to reduce early jitter)
       if (
@@ -543,14 +537,23 @@ export class GraphRenderer {
       const nodes = this.simulation ? this.simulation.nodes() : [];
       if (nodes && nodes.length > 0) {
         // Persist coordinates to server (Meteor environment expected)
+        // Instead of a simple boolean, set a timestamp until which we consider the save 'in progress'.
+        // This avoids immediate reactive updates from restarting the simulation.
+        const SAVE_BLOCK_MS = 3000; // block auto-restarts for 3 seconds after initiating a save
+        this._savingCoordinatesUntil = Date.now() + SAVE_BLOCK_MS;
         if (typeof Meteor !== "undefined" && Meteor.call) {
           Meteor.call("updateCoordinates", nodes, (error) => {
+            // clear the saving-until timestamp after save completes
+            this._savingCoordinatesUntil = 0;
             if (error) {
               console.error("Error saving coordinates:", error);
             } else {
               console.log("Coordinates saved to database");
             }
           });
+        } else {
+          // If Meteor is not available, clear the timestamp immediately
+          this._savingCoordinatesUntil = 0;
         }
       }
     }
@@ -559,6 +562,138 @@ export class GraphRenderer {
   // ---------------------------
   // Utility: link strength & distance
   // ---------------------------
+  // Bind UI controls to simulation and update parameters live.
+  bindPhysicsControls() {
+    const self = this;
+
+    const read = (id, fallback) => {
+      try {
+        const el = document.getElementById(id);
+        if (!el) return fallback;
+        const v = parseFloat(el.value);
+        return isFinite(v) ? v : fallback;
+      } catch (e) {
+        return fallback;
+      }
+    };
+
+    const applyValues = () => {
+      // Read values from DOM (fall back to configured constants)
+      this.linkDistMult = read(
+        "linkDistMult",
+        FORCE_CONFIG.LINK_DIST_MULT || 100.4,
+      );
+      this.linkStrInput = read(
+        "linkStrInput",
+        FORCE_CONFIG.LINK_STR_INPUT || 30,
+      );
+      this.linkSStrInput = read(
+        "linkSStrInput",
+        FORCE_CONFIG.LINK_S_STR_INPUT || 2.1,
+      );
+      this.linkOrtInput = read(
+        "linkOrtInput",
+        FORCE_CONFIG.LINK_ORT_INPUT || 1.1,
+      );
+      this.chargeInput = read("ChargeInput", FORCE_CONFIG.CHARGE_INPUT || 6.1);
+      this.gravInput = read("gravInput", FORCE_CONFIG.GRAV_INPUT || 15);
+      this.sizeInput = read(
+        "sizeInput",
+        NODE_DEFAULTS.RADIUS_MULTIPLIER || 1.5,
+      );
+
+      // Update central config so other code/closures can reference updated values
+      FORCE_CONFIG.LINK_DIST_MULT = this.linkDistMult;
+      FORCE_CONFIG.LINK_STR_INPUT = this.linkStrInput;
+      FORCE_CONFIG.LINK_S_STR_INPUT = this.linkSStrInput;
+      FORCE_CONFIG.LINK_ORT_INPUT = this.linkOrtInput;
+      FORCE_CONFIG.CHARGE_INPUT = this.chargeInput;
+      FORCE_CONFIG.GRAV_INPUT = this.gravInput;
+      FORCE_CONFIG.SIZE_INPUT = this.sizeInput;
+
+      // Update charge force dynamically if present (strength callback reads FORCE_CONFIG)
+      const chargeForce = this.simulation && this.simulation.force("charge");
+      if (chargeForce && chargeForce.strength) {
+        chargeForce.strength((d) => {
+          const importance = d.importance || NODE_DEFAULTS.IMPORTANCE;
+          // negative for repulsion; exponent chosen to match legacy v3 behavior
+          return -Math.pow(importance, 2.1) * (FORCE_CONFIG.CHARGE_INPUT || 1);
+        });
+      }
+
+      // Update link force parameters if present
+      const linkForce = this.simulation && this.simulation.force("link");
+      if (linkForce && linkForce.distance) {
+        // keep distance as function so it will pick up updated FORCE_CONFIG
+        linkForce.distance((d) => {
+          // delegate to getCustomLinkDistance which uses latest controls
+          return self.getCustomLinkDistance(d);
+        });
+      }
+      if (linkForce && linkForce.strength) {
+        linkForce.strength((d) => {
+          // prefer per-link zoom strength if defined, otherwise use link.strength
+          return self.getLinkStrength(d);
+        });
+      }
+
+      // Update collision radius according to size control
+      const collide = this.simulation && this.simulation.force("collision");
+      if (collide && collide.radius) {
+        collide.radius((d) => {
+          return (
+            Math.sqrt(d.importance || NODE_DEFAULTS.IMPORTANCE) *
+            (this.sizeInput || NODE_DEFAULTS.RADIUS_MULTIPLIER)
+          );
+        });
+      }
+
+      // Update gravity inputs in our custom gravity force via FORCE_CONFIG.GRAV_INPUT,
+      // the gravity custom force references FORCE_CONFIG.GRAV_INPUT at runtime.
+
+      // Wake simulation mildly so changes animate in (but keep it stable)
+      if (this.simulation) {
+        const a = Math.max(
+          0.06,
+          Math.min(0.18, this.simulation.alpha() + 0.06),
+        );
+        this.simulation.alpha(a).restart();
+      }
+
+      // Also update visuals that depend on size
+      this.nodeGroup
+        .selectAll("circle")
+        .attr(
+          "r",
+          (d) =>
+            Math.sqrt(d.importance) *
+            (this.sizeInput || NODE_DEFAULTS.RADIUS_MULTIPLIER),
+        );
+      // Links and markers that depend on size should be updated where they're rendered.
+    };
+
+    // Attach listeners to inputs (change + input for responsive updates)
+    const ids = [
+      "linkDistMult",
+      "linkStrInput",
+      "linkSStrInput",
+      "linkOrtInput",
+      "ChargeInput",
+      "gravInput",
+      "sizeInput",
+    ];
+    ids.forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.addEventListener("input", applyValues);
+        el.addEventListener("change", applyValues);
+      }
+    });
+
+    // Initial application
+    applyValues();
+  }
+
   getLinkStrength(link) {
     const zoomLevel = (link && link.zoomLevel) || NODE_DEFAULTS.ZOOM_LEVEL || 0;
     return (
@@ -568,10 +703,15 @@ export class GraphRenderer {
   }
 
   getCustomLinkDistance(link) {
-    // Base distance scaled by link strength (square root to reduce growth)
+    // Base distance scaled by link strength with UI-controlled density multiplier.
     const baseDistance = LINK_DEFAULTS.DISTANCE || 100;
     const strength = link && (link.strength || LINK_DEFAULTS.STRENGTH);
-    return baseDistance * Math.sqrt(Math.max(0.1, strength));
+    // linkDistMult historically was a percentage-like multiplier (e.g. 100.4). Use it as a percent factor.
+    const mult =
+      (this.linkDistMult || FORCE_CONFIG.LINK_DIST_MULT || 100) / 100;
+    // Use sqrt of strength to moderate growth; apply density multiplier and clamp a small floor
+    const dist = baseDistance * Math.sqrt(Math.max(0.1, strength)) * mult;
+    return Math.max(20, dist); // avoid tiny distances
   }
 
   applyCustomConstraints(node) {
@@ -651,8 +791,13 @@ export class GraphRenderer {
       const springs = this.simulation.force("springs");
       if (springs && springs.initialize) springs.initialize(nodes);
 
-      // Only restart if simulation is nearly idle
-      if (this.simulation.alpha() < 0.005) {
+      // Only restart if simulation is nearly idle and we're not within the post-save blocking window.
+      // If a server save was recently initiated, reactive updates may follow; avoid auto-restarting
+      // the simulation until the saving window expires or the save completes.
+      const now = Date.now();
+      const savingActive =
+        this._savingCoordinatesUntil && now < this._savingCoordinatesUntil;
+      if (!savingActive && this.simulation.alpha() < 0.005) {
         // use a lower restart alpha so the simulation doesn't become wildly energetic
         this.simulation.alpha(0.15).restart();
       }
