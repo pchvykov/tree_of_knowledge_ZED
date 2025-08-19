@@ -12,18 +12,14 @@ import {
 } from "../../lib/constants.js";
 
 /**
- * D3 Graph Visualization Helper (updated to use D3 v7 custom-force approach)
- * Replaces the legacy force-layout with a simulation using custom forces:
- *  - charge (manyBody)
- *  - link (forceLink; kept but with custom strength/distance)
- *  - center
- *  - gravity (custom)
- *  - orientation (custom)
- *  - springs (custom three-regime spring force)
- *  - collision (forceCollide)
+ * GraphRenderer (refactored)
+ * - Centralized physics into a single custom force for speed & clarity.
+ * - Live UI control binding remains supported via bindPhysicsControls().
  *
- * The implementation preserves the UI surface and interactions from the previous
- * file while replacing the force-related internals to match the pseudocode.
+ * Minimal, efficient per-tick physics:
+ *  - Single pass over links: linear spring + optional orienting torque
+ *  - Single pass over nodes: gravity, annealing noise, bounding
+ *  - Uses node.vx/vy modifications (d3 integrates)
  */
 export class GraphRenderer {
   constructor(svgSelector, options = {}) {
@@ -34,80 +30,49 @@ export class GraphRenderer {
     this.width = options.width || GRAPH_CONFIG.SVG_DIMENSIONS.WIDTH;
     this.height = options.height || GRAPH_CONFIG.SVG_DIMENSIONS.HEIGHT;
 
-    // Drag / interaction state
-    this.isDraggingForLink = false;
-    this.isDraggingNode = false;
-    this.tempLine = null;
-    this.dragStartNode = null;
-
-    // Selection state
-    this.selectedItem = null;
-
-    // Callbacks
-    this.onNodeClick = options.onNodeClick || (() => {});
-    this.onLinkClick = options.onLinkClick || (() => {});
-    this.onNodeDoubleClick = options.onNodeDoubleClick || (() => {});
-    this.onEmptySpaceClick = options.onEmptySpaceClick || (() => {});
-    this.onNodeDragEnd = options.onNodeDragEnd || (() => {});
-    this.onLinkCreate = options.onLinkCreate || (() => {});
-    this.onLinkOrient = options.onLinkOrient || (() => {});
-    this.onLinkReverse = options.onLinkReverse || (() => {});
-
-    this.isAdminMode = options.isAdminMode || false;
-
-    // Simulation and data
+    // runtime data
     this.simulation = null;
-    this.currentLinks = [];
     this.currentNodes = [];
+    this.currentLinks = [];
 
-    // Tuning for annealing / noise
-    // Reduced defaults to avoid excessive initial jitter
-    this.noiseFrequency = 0.01; // fewer noisy ticks by default
-    this.noiseStrength = 0.2; // smaller noise magnitude by default
-    // Last timestamp for alpha logging (we log roughly once per second)
-    this._lastAlphaLogTime = 0;
-    // Saved runtime tuning while RUN button is held
-    this._savedAlphaDecay = null;
-    this._savedNoiseStrength = null;
-    this._savedNoiseFrequency = null;
+    // default annealing/noise
+    this.noiseFrequency = 0.01;
+    this.noiseStrength = 0.2;
+
+    // small guards
+    this._savingCoordinatesUntil = 0;
+    this._lastSavedPositions = null;
+    this._lastSavedPositionsUntil = 0;
 
     this.initialize();
   }
 
   initialize() {
     this.svg = d3.select(this.svgSelector);
-
-    // Setup arrow markers for directed edges
     this.setupArrowMarkers();
-
-    // Add click handler for empty space
     this.svg.on("click", (event) => {
       if (event.target === this.svg.node()) {
         const mousePos = d3.pointer(event);
-        this.onEmptySpaceClick(mousePos[0], mousePos[1]);
+        this.onEmptySpaceClick &&
+          this.onEmptySpaceClick(mousePos[0], mousePos[1]);
       }
     });
-
-    // Create groups for links and nodes (links first so they appear behind nodes)
     this.linkGroup = this.svg.append("g").attr("class", "links");
     this.nodeGroup = this.svg.append("g").attr("class", "nodes");
-
-    // Setup keyboard handlers
     this.setupKeyboardHandlers();
 
-    // Bind the UI physics controls (live) so changes affect the running simulation
-    // This reads the input fields in the main HTML and updates force parameters.
+    // create and bind simulation and UI hooks
+    this.setupForceSimulation();
     this.bindPhysicsControls();
   }
 
   setupArrowMarkers() {
     let defs = this.svg.select("defs");
-    if (defs.empty()) {
-      defs = this.svg.append("defs");
-    }
-
+    if (defs.empty()) defs = this.svg.append("defs");
     defs
-      .append("marker")
+      .selectAll(`#${ARROW_CONFIG.MARKER_ID}`)
+      .data([0])
+      .join("marker")
       .attr("id", ARROW_CONFIG.MARKER_ID)
       .attr("viewBox", ARROW_CONFIG.VIEW_BOX)
       .attr("refX", ARROW_CONFIG.REF_X)
@@ -123,57 +88,162 @@ export class GraphRenderer {
 
   setupKeyboardHandlers() {
     d3.select(window).on("keydown", (event) => {
-      this.handleKeyDown(event);
+      if (!this.selectedItem || !this.isAdminMode) return;
+      if (event.ctrlKey || event.metaKey) {
+        switch (event.keyCode) {
+          case KEYBOARD_SHORTCUTS.CTRL_O:
+            event.preventDefault();
+            if (this.selectedItem.source)
+              this.toggleLinkOrientation(this.selectedItem);
+            break;
+          case KEYBOARD_SHORTCUTS.CTRL_R:
+            event.preventDefault();
+            if (this.selectedItem.source)
+              this.reverseLinkDirection(this.selectedItem);
+            break;
+        }
+      }
     });
   }
 
-  handleKeyDown(event) {
-    if (!this.selectedItem || !this.isAdminMode) return;
-
-    if (event.ctrlKey || event.metaKey) {
-      switch (event.keyCode) {
-        case KEYBOARD_SHORTCUTS.CTRL_O: // Orient link
-          event.preventDefault();
-          if (this.selectedItem.source) {
-            this.toggleLinkOrientation(this.selectedItem);
-          }
-          break;
-        case KEYBOARD_SHORTCUTS.CTRL_R: // Reverse link
-          event.preventDefault();
-          if (this.selectedItem.source) {
-            this.reverseLinkDirection(this.selectedItem);
-          }
-          break;
-      }
-    }
-  }
-
-  // ---------------------------
-  // Simulation setup (D3 v7)
-  // ---------------------------
   setupForceSimulation() {
-    const width = this.width;
-    const height = this.height;
     const self = this;
 
-    // Custom gravity force (towards a gravityCenter, default center)
-    function createCustomGravityForce() {
+    // Single custom physics force that does springs + orientation + gravity + noise + bounds
+    function createCustomPhysicsForce() {
       let nodes;
-      const gravityCenter = { x: width / 2, y: height / 2 };
-      const gravityStrength = 1; // multiplier, scaled by FORCE_CONFIG.GRAV_INPUT later
-
       function force(alpha) {
-        const g = 30 * alpha * (FORCE_CONFIG.GRAV_INPUT / 10); // scaled
-        for (let i = 0; i < nodes.length; i++) {
-          const node = nodes[i];
-          if (node.permFixed || node.fixed) continue;
+        if (!nodes) return;
+        const links = self.currentLinks || [];
+        const g = 30 * alpha;
 
-          const gravityX = (gravityCenter.x - node.x) * g * gravityStrength;
-          const gravityY = (gravityCenter.y - node.y) * g * gravityStrength;
+        // read control values once per tick
+        const shortStr = FORCE_CONFIG.LINK_S_STR_INPUT || 2.1;
+        const orientInput = FORCE_CONFIG.LINK_ORT_INPUT || 1.1;
+        const gravInput = FORCE_CONFIG.GRAV_INPUT || 15;
+        const chargeInput = FORCE_CONFIG.CHARGE_INPUT || 1;
+        const width = self.width;
+        const height = self.height;
+        const centerX = width / 2;
+        const centerY = height / 2;
 
-          const mass = node.importance || NODE_DEFAULTS.IMPORTANCE;
-          node.vx += gravityX / mass;
-          node.vy += gravityY / mass;
+        // Single pass over links: compute spring + orientation forces
+        for (let i = 0, L = links.length; i < L; i++) {
+          const link = links[i];
+          if (!link || !link.source || !link.target) continue;
+          const s = link.source,
+            t = link.target;
+          if (!s || !t) continue;
+
+          // skip if both fixed/permFixed
+          if ((s.permFixed || s.fixed) && (t.permFixed || t.fixed)) continue;
+
+          const dx = t.x - s.x,
+            dy = t.y - s.y;
+          let len = Math.hypot(dx, dy);
+          if (len < 1e-6) len = 1e-6;
+
+          const strength = link.strength || LINK_DEFAULTS.STRENGTH;
+          const minDist = link.minDist || 30;
+
+          // linear spring (short-spring style applied to all links)
+          const scale =
+            (g / 50) * (strength * strength) * shortStr * (1 - minDist / len);
+          let fx = (dx / len) * scale;
+          let fy = (dy / len) * scale;
+
+          // orienting torque for directed links (applied as perpendicular force)
+          if (link.oriented) {
+            const orientScale =
+              ((orientInput * g * Math.pow(strength, 3)) / len) *
+              (Math.exp(-dx / len) - Math.exp(-1)) *
+              Math.sign(dy || 1);
+            // perpendicular components:
+            const ofx = -dy * orientScale;
+            const ofy = dx * orientScale;
+            // combine
+            // add orient forces to fx/fy (orient considered additional)
+            fx += ofx; // eslint-disable-line no-param-reassign
+            fy += ofy; // eslint-disable-line no-param-reassign
+          } else if (link.type === "theorem") {
+            const orthScale =
+              ((-orientInput * g * Math.pow(strength, 3)) / len) *
+              Math.pow(dx / len, 2) *
+              Math.sign(dy) *
+              Math.sign(dx);
+            const ofx = -dy * orthScale;
+            const ofy = dx * orthScale;
+            fx += ofx; // eslint-disable-line no-param-reassign
+            fy += ofy; // eslint-disable-line no-param-reassign
+          }
+
+          const sMass = s.importance || NODE_DEFAULTS.IMPORTANCE;
+          const tMass = t.importance || NODE_DEFAULTS.IMPORTANCE;
+
+          if (!(s.permFixed || s.fixed || s.dragging)) {
+            s.vx = (s.vx || 0) + fx / sMass;
+            s.vy = (s.vy || 0) + fy / sMass;
+          }
+          if (!(t.permFixed || t.fixed || t.dragging)) {
+            t.vx = (t.vx || 0) - fx / tMass;
+            t.vy = (t.vy || 0) - fy / tMass;
+          }
+        }
+
+        // Single pass over nodes: gravity, noise, bounds
+        for (let j = 0, N = nodes.length; j < N; j++) {
+          const n = nodes[j];
+          if (!n) continue;
+          if (n.permFixed || n.fixed || n.dragging) {
+            // apply bounds inline for fixed/permFixed nodes to avoid calling this.applyBounds
+            const padF =
+              Math.sqrt(n.importance || NODE_DEFAULTS.IMPORTANCE) *
+                (FORCE_CONFIG.SIZE_INPUT || NODE_DEFAULTS.RADIUS_MULTIPLIER) +
+              5;
+            n.x = Math.max(padF, Math.min(self.width - padF, n.x));
+            n.y = Math.max(padF, Math.min(self.height - padF, n.y));
+            continue;
+          }
+
+          const mass = n.importance || NODE_DEFAULTS.IMPORTANCE;
+
+          // rectified cubic-like gravity toward center (similar behavior to old app)
+          const dxG = n.x - centerX,
+            dyG = n.y - centerY;
+          const grav = 0.01 * gravInput;
+          // apply cubic-ish pull scaled by alpha and canvas size
+          n.vx =
+            (n.vx || 0) -
+            (grav * alpha * Math.pow(dxG, 2) * Math.sign(dxG)) /
+              (Math.max(1, width) / 2) /
+              mass;
+          n.vy =
+            (n.vy || 0) -
+            (grav * alpha * Math.pow(dyG, 2) * Math.sign(dyG)) /
+              (Math.max(1, height) / 2) /
+              mass;
+
+          // annealing noise (quadratic so it decays rapidly as alpha shrinks)
+          if (Math.random() < self.noiseFrequency) {
+            const noise =
+              (g *
+                g *
+                (Math.random() - 0.5) *
+                (n.importance || NODE_DEFAULTS.IMPORTANCE)) /
+              100;
+            n.vx += noise / mass;
+            n.vy += noise / mass;
+          }
+
+          // apply bounding constraints inline for performance
+          const pad =
+            Math.sqrt(n.importance || NODE_DEFAULTS.IMPORTANCE) *
+              (FORCE_CONFIG.SIZE_INPUT || NODE_DEFAULTS.RADIUS_MULTIPLIER) +
+            5;
+          if (n.x < pad) n.x = pad;
+          if (n.x > self.width - pad) n.x = self.width - pad;
+          if (n.y < pad) n.y = pad;
+          if (n.y > self.height - pad) n.y = self.height - pad;
         }
       }
       force.initialize = function (_nodes) {
@@ -182,132 +252,24 @@ export class GraphRenderer {
       return force;
     }
 
-    // Orienting force for directed links
-    function createOrientationForce() {
-      let nodes = [];
-      let links = [];
-      function force(alpha) {
-        const g = 30 * alpha;
-        links.forEach((link) => {
-          if (!link.source || !link.target) return;
-          const source = link.source;
-          const target = link.target;
-          if (
-            (source.permFixed || source.fixed) &&
-            (target.permFixed || target.fixed)
-          )
-            return;
-
-          const dx = target.x - source.x;
-          const dy = target.y - source.y;
-          const distance = Math.sqrt(dx * dx + dy * dy);
-          if (distance < 0.01) return;
-
-          const strength = link.strength || LINK_DEFAULTS.STRENGTH;
-          const orientingStrength =
-            g * Math.pow(strength, 2.1) * (FORCE_CONFIG.LINK_ORT_INPUT || 1);
-
-          // Rotation-like orienting force (heuristic from pseudocode)
-          const rotationForce =
-            -orientingStrength *
-            (Math.exp((-dx * dx) / (distance * distance)) - Math.exp(-1)) *
-            Math.sign(dx || 1);
-
-          const fx = rotationForce * (-dy / distance);
-          const fy = rotationForce * (dx / distance);
-
-          if (!(source.permFixed || source.fixed)) {
-            source.vx -= fx / (source.importance || NODE_DEFAULTS.IMPORTANCE);
-            source.vy -= fy / (source.importance || NODE_DEFAULTS.IMPORTANCE);
-          }
-          if (!(target.permFixed || target.fixed)) {
-            target.vx += fx / (target.importance || NODE_DEFAULTS.IMPORTANCE);
-            target.vy += fy / (target.importance || NODE_DEFAULTS.IMPORTANCE);
-          }
-        });
-      }
-      force.initialize = function (_nodes) {
-        nodes = _nodes;
-        // If simulation has a link force attached, grab its links if possible
-        const linkForce = self.simulation && self.simulation.force("link");
-        links = (linkForce && linkForce.links && linkForce.links()) || [];
-      };
-      return force;
-    }
-
-    // Custom spring force with three-regime system
-    function createCustomSpringForce() {
-      let nodes = [];
-      let links = [];
-      function force(alpha) {
-        const g = 30 * alpha;
-        links.forEach((link) => {
-          if (!link.source || !link.target) return;
-          const source = link.source;
-          const target = link.target;
-
-          const dx = target.x - source.x;
-          const dy = target.y - source.y;
-          const distance = Math.sqrt(dx * dx + dy * dy);
-          const strength = link.strength || LINK_DEFAULTS.STRENGTH;
-          const targetDistance = self.getCustomLinkDistance(link);
-
-          const transDist = targetDistance * strength;
-          let springForce;
-          const minDistance = link.minDist || 30;
-          // Short regime
-          if (distance < transDist) {
-            springForce =
-              ((distance - minDistance) * g * Math.pow(strength, 2.1)) / 50;
-          } else {
-            // Long regime - apply a weak constant pulling force
-            const linkStrengthConst = (FORCE_CONFIG.LINK_STR_INPUT || 1) * 0.01;
-            springForce = linkStrengthConst * strength;
-          }
-
-          if (distance > 0.01) {
-            const fx = (dx / distance) * springForce;
-            const fy = (dy / distance) * springForce;
-
-            if (!(source.permFixed || source.fixed)) {
-              source.vx += fx / (source.importance || NODE_DEFAULTS.IMPORTANCE);
-              source.vy += fy / (source.importance || NODE_DEFAULTS.IMPORTANCE);
-            }
-            if (!(target.permFixed || target.fixed)) {
-              target.vx -= fx / (target.importance || NODE_DEFAULTS.IMPORTANCE);
-              target.vy -= fy / (target.importance || NODE_DEFAULTS.IMPORTANCE);
-            }
-          }
-        });
-      }
-      force.initialize = function (_nodes) {
-        nodes = _nodes;
-        const linkForce = self.simulation && self.simulation.force("link");
-        links = (linkForce && linkForce.links && linkForce.links()) || [];
-      };
-      return force;
-    }
-
-    // Create the simulation
+    // create simulation
     this.simulation = d3
       .forceSimulation()
       .nodes([])
-      .alphaDecay(FORCE_CONFIG.ALPHA_DECAY || 0.02) // use configured decay to allow stopping
+      .alphaDecay(FORCE_CONFIG.ALPHA_DECAY || 0.02)
       .alphaTarget(0)
-      .velocityDecay(0.9) // equivalent to v3 friction
+      .velocityDecay(0.9)
       .on("tick", () => this.onTick())
       .on("end", () => this.onForceEnd());
 
-    // Attach forces
+    // built-in charge (many-body) and collide, keep link force only for ID mapping if needed
     this.simulation
       .force(
         "charge",
         d3
           .forceManyBody()
           .strength((d) => {
-            // Custom charge based on node importance (negative for repulsion)
             const importance = d.importance || NODE_DEFAULTS.IMPORTANCE;
-            // Match pseudocode -(importance)^(p+1) with p ~= 1.1 -> exponent 2.1
             return (
               -Math.pow(importance, 2.1) * (FORCE_CONFIG.CHARGE_INPUT || 1)
             );
@@ -318,156 +280,102 @@ export class GraphRenderer {
               (FORCE_CONFIG.PH_CH_INPUT || 90),
           ),
       )
+      .force("link", null) // no built-in link force to avoid duplication
       .force(
-        "link",
-        d3
-          .forceLink()
-          .id((d) => d._id)
-          .strength((d) => this.getLinkStrength(d))
-          .distance((d) => this.getCustomLinkDistance(d))
-          .links([]),
+        "center",
+        d3.forceCenter(this.width / 2, this.height / 2).strength(0.01),
       )
-      .force("center", d3.forceCenter(width / 2, height / 2).strength(0.01))
-      .force("gravity", createCustomGravityForce())
-      .force("orientation", createOrientationForce())
-      .force("springs", createCustomSpringForce())
+      .force("physics", createCustomPhysicsForce())
       .force(
         "collision",
         d3
           .forceCollide()
-          .radius((d) => {
-            return (
+          .radius(
+            (d) =>
               Math.sqrt(d.importance || NODE_DEFAULTS.IMPORTANCE) *
-              NODE_DEFAULTS.RADIUS_MULTIPLIER
-            );
-          })
+              (FORCE_CONFIG.SIZE_INPUT || NODE_DEFAULTS.RADIUS_MULTIPLIER),
+          )
           .strength(0.8),
       );
 
-    // Setup RUN button and manual drag handling
+    // Run button & drag behavior
     this.setupRunButton();
+    this.createSharedDrag();
+  }
 
-    // Manual drag handling (non-fx/fy) so we can keep nodes independent of .fx/.fy
+  // create a shared drag handler used by node elements
+  createSharedDrag() {
     this.isDragging = false;
     this.dragNode = null;
-
     this.forceDrag = d3
       .drag()
       .on("start", (event, d) => {
-        // Support link creation mode (ctrl/meta)
         if (
           this.isAdminMode &&
           (event.sourceEvent.ctrlKey || event.sourceEvent.metaKey)
         ) {
           event.sourceEvent.stopPropagation();
           event.sourceEvent.preventDefault();
-          this.startLinkCreation(event, d);
+          this.startLinkCreation && this.startLinkCreation(event, d);
           return;
         }
         this.isDragging = true;
         this.dragNode = d;
         d.dragging = true;
-        // Keep simulation active while dragging
-        if (!event.active) {
+        if (!event.active && this.simulation)
           this.simulation
             .alphaTarget(FORCE_CONFIG.ALPHA_TARGET_ACTIVE || 0.1)
             .restart();
-        }
       })
       .on("drag", (event, d) => {
         if (this.isDraggingForLink) {
-          this.updateTempLine(event.x, event.y);
+          this.updateTempLine && this.updateTempLine(event.x, event.y);
           return;
         }
-        // Directly set position (we don't set fx/fy so nodes can still be affected)
         d.x = event.x;
         d.y = event.y;
-        // Ensure simulation keeps moving
-        if (this.simulation.alpha() < 0.1) {
+        if (this.simulation && this.simulation.alpha() < 0.1)
           this.simulation.alpha(0.1);
-        }
       })
       .on("end", (event, d) => {
         if (this.isDraggingForLink) {
-          this.finishLinkCreation(event);
+          this.finishLinkCreation && this.finishLinkCreation(event);
         } else {
           this.isDragging = false;
           this.dragNode = null;
           d.dragging = false;
-          if (this.isAdminMode) {
+          if (this.isAdminMode && this.onNodeDragEnd)
             this.onNodeDragEnd(d._id, d.x, d.y);
-          }
-          // Ramp down the alpha target
-          if (!event.active) {
-            this.simulation.alphaTarget(0);
-          }
+          if (!event.active && this.simulation) this.simulation.alphaTarget(0);
         }
       });
   }
 
-  // ---------------------------
-  // Tick handler
-  // ---------------------------
   onTick() {
-    // Ensure RUN behavior keeps alpha up while pressing run
-    if (this.forceRun) {
-      this.simulation.alpha(0.1);
-    }
+    // keep RUN active if requested
+    if (this.forceRun && this.simulation) this.simulation.alpha(0.1);
 
-    // Add annealing noise and apply constraints in tick before DOM update
-    const nodes = this.simulation.nodes() || [];
-    const alpha = this.simulation.alpha();
-    const g = 30 * alpha;
+    // update visuals from node positions (d3 handles the physics integration)
+    if (!this.nodeGroup || !this.linkGroup) return;
 
-    nodes.forEach((node) => {
-      // Initialize vx/vy if not present
-      if (typeof node.vx === "undefined") node.vx = 0;
-      if (typeof node.vy === "undefined") node.vy = 0;
-
-      // Alpha logging disabled to reduce console noise.
-
-      // Noise for annealing (scaled by alpha to reduce early jitter)
-      if (
-        !node.permFixed &&
-        !node.fixed &&
-        Math.random() < this.noiseFrequency
-      ) {
-        const noiseMag = this.noiseStrength * g * alpha;
-        node.vx += (Math.random() - 0.5) * noiseMag;
-        node.vy += (Math.random() - 0.5) * noiseMag;
-      }
-
-      // Apply custom constraints
-      this.applyCustomConstraints(node);
-    });
-
-    // Update visuals
-    if (this.nodeGroup && this.linkGroup) {
-      this.nodeGroup
-        .selectAll("circle")
-        .attr("cx", (d) => d.x)
-        .attr("cy", (d) => d.y);
-
-      this.nodeGroup
-        .selectAll("text")
-        .attr("x", (d) => d.x + UI.LABEL_OFFSET.X)
-        .attr("y", (d) => d.y + UI.LABEL_OFFSET.Y);
-
-      this.linkGroup
-        .selectAll("line")
-        .attr("x1", (d) => (d.source && d.source.x) || 0)
-        .attr("y1", (d) => (d.source && d.source.y) || 0)
-        .attr("x2", (d) => (d.target && d.target.x) || 0)
-        .attr("y2", (d) => (d.target && d.target.y) || 0);
-    }
+    this.nodeGroup
+      .selectAll("circle")
+      .attr("cx", (d) => d.x)
+      .attr("cy", (d) => d.y);
+    this.nodeGroup
+      .selectAll("text")
+      .attr("x", (d) => d.x + UI.LABEL_OFFSET.X)
+      .attr("y", (d) => d.y + UI.LABEL_OFFSET.Y);
+    this.linkGroup
+      .selectAll("line")
+      .attr("x1", (d) => (d.source && d.source.x) || 0)
+      .attr("y1", (d) => (d.source && d.source.y) || 0)
+      .attr("x2", (d) => (d.target && d.target.x) || 0)
+      .attr("y2", (d) => (d.target && d.target.y) || 0);
   }
 
-  // ---------------------------
-  // RUN button that temporarily keeps alpha high
-  // ---------------------------
   setupRunButton() {
     this.forceRun = false;
-
     const runButton = this.svg
       .append("svg:g")
       .attr("id", "runButton")
@@ -476,11 +384,9 @@ export class GraphRenderer {
       .on("mousedown", () => {
         this.forceRun = true;
         if (this.simulation) {
-          // save previous tuning
           this._savedAlphaDecay = this.simulation.alphaDecay();
           this._savedNoiseStrength = this.noiseStrength;
           this._savedNoiseFrequency = this.noiseFrequency;
-          // During RUN: keep simulation active longer and reduce noise to reduce jitter
           this.simulation.alphaTarget(0.3).restart();
           this.simulation.alphaDecay(0.00005);
           this.noiseStrength = 0.08;
@@ -490,7 +396,6 @@ export class GraphRenderer {
       .on("mouseup", () => {
         this.forceRun = false;
         if (this.simulation) {
-          // restore previous tuning
           if (this._savedAlphaDecay != null)
             this.simulation.alphaDecay(this._savedAlphaDecay);
           if (this._savedNoiseStrength != null)
@@ -519,7 +424,6 @@ export class GraphRenderer {
       .attr("height", 30)
       .attr("fill", "lightgray")
       .attr("stroke", "black");
-
     runButton
       .append("text")
       .text(">>>")
@@ -529,151 +433,114 @@ export class GraphRenderer {
       .attr("font-size", "14px");
   }
 
-  // ---------------------------
-  // Force end behavior
-  // ---------------------------
   onForceEnd() {
-    if (this.isAdminMode) {
-      const nodes = this.simulation ? this.simulation.nodes() : [];
-      if (nodes && nodes.length > 0) {
-        // Persist coordinates to server (Meteor environment expected)
-        // Instead of a simple boolean, set a timestamp until which we consider the save 'in progress'.
-        // This avoids immediate reactive updates from restarting the simulation.
-        const SAVE_BLOCK_MS = 3000; // block auto-restarts for 3 seconds after initiating a save
+    if (this.isAdminMode && this.simulation) {
+      const nodes = this.simulation.nodes() || [];
+      if (nodes.length) {
+        // snapshot positions to prevent immediate reactive restart
+        const SAVE_BLOCK_MS = 3000;
         this._savingCoordinatesUntil = Date.now() + SAVE_BLOCK_MS;
+        this._lastSavedPositions = {};
+        nodes.forEach((n) => {
+          if (n && n._id !== undefined)
+            this._lastSavedPositions[n._id] = {
+              x: Math.round((n.x || 0) * 10) / 10,
+              y: Math.round((n.y || 0) * 10) / 10,
+            };
+        });
+        this._lastSavedPositionsUntil = Date.now() + 10000;
         if (typeof Meteor !== "undefined" && Meteor.call) {
-          Meteor.call("updateCoordinates", nodes, (error) => {
-            // clear the saving-until timestamp after save completes
-            this._savingCoordinatesUntil = 0;
-            if (error) {
-              console.error("Error saving coordinates:", error);
-            } else {
-              console.log("Coordinates saved to database");
-            }
+          Meteor.call("updateCoordinates", nodes, (err) => {
+            this._savingCoordinatesUntil = Date.now() + SAVE_BLOCK_MS;
+            // keep snapshot until updateGraph detects changes or timeout elapses
+            setTimeout(() => {
+              if (Date.now() >= this._savingCoordinatesUntil)
+                this._savingCoordinatesUntil = 0;
+            }, SAVE_BLOCK_MS);
           });
         } else {
-          // If Meteor is not available, clear the timestamp immediately
           this._savingCoordinatesUntil = 0;
         }
       }
     }
   }
 
-  // ---------------------------
-  // Utility: link strength & distance
-  // ---------------------------
-  // Bind UI controls to simulation and update parameters live.
+  // Bind controls in the HTML to live physics parameters
   bindPhysicsControls() {
     const self = this;
-
     const read = (id, fallback) => {
-      try {
-        const el = document.getElementById(id);
-        if (!el) return fallback;
-        const v = parseFloat(el.value);
-        return isFinite(v) ? v : fallback;
-      } catch (e) {
-        return fallback;
-      }
+      const el = document.getElementById(id);
+      if (!el) return fallback;
+      const v = parseFloat(el.value);
+      return Number.isFinite(v) ? v : fallback;
     };
-
-    const applyValues = () => {
-      // Read values from DOM (fall back to configured constants)
-      this.linkDistMult = read(
+    const apply = () => {
+      FORCE_CONFIG.LINK_DIST_MULT = read(
         "linkDistMult",
         FORCE_CONFIG.LINK_DIST_MULT || 100.4,
       );
-      this.linkStrInput = read(
+      FORCE_CONFIG.LINK_STR_INPUT = read(
         "linkStrInput",
         FORCE_CONFIG.LINK_STR_INPUT || 30,
       );
-      this.linkSStrInput = read(
+      FORCE_CONFIG.LINK_S_STR_INPUT = read(
         "linkSStrInput",
         FORCE_CONFIG.LINK_S_STR_INPUT || 2.1,
       );
-      this.linkOrtInput = read(
+      FORCE_CONFIG.LINK_ORT_INPUT = read(
         "linkOrtInput",
         FORCE_CONFIG.LINK_ORT_INPUT || 1.1,
       );
-      this.chargeInput = read("ChargeInput", FORCE_CONFIG.CHARGE_INPUT || 6.1);
-      this.gravInput = read("gravInput", FORCE_CONFIG.GRAV_INPUT || 15);
-      this.sizeInput = read(
-        "sizeInput",
-        NODE_DEFAULTS.RADIUS_MULTIPLIER || 1.5,
+      FORCE_CONFIG.CHARGE_INPUT = read(
+        "ChargeInput",
+        FORCE_CONFIG.CHARGE_INPUT || 6.1,
       );
-
-      // Update central config so other code/closures can reference updated values
-      FORCE_CONFIG.LINK_DIST_MULT = this.linkDistMult;
-      FORCE_CONFIG.LINK_STR_INPUT = this.linkStrInput;
-      FORCE_CONFIG.LINK_S_STR_INPUT = this.linkSStrInput;
-      FORCE_CONFIG.LINK_ORT_INPUT = this.linkOrtInput;
-      FORCE_CONFIG.CHARGE_INPUT = this.chargeInput;
-      FORCE_CONFIG.GRAV_INPUT = this.gravInput;
-      FORCE_CONFIG.SIZE_INPUT = this.sizeInput;
-
-      // Update charge force dynamically if present (strength callback reads FORCE_CONFIG)
-      const chargeForce = this.simulation && this.simulation.force("charge");
-      if (chargeForce && chargeForce.strength) {
-        chargeForce.strength((d) => {
-          const importance = d.importance || NODE_DEFAULTS.IMPORTANCE;
-          // negative for repulsion; exponent chosen to match legacy v3 behavior
-          return -Math.pow(importance, 2.1) * (FORCE_CONFIG.CHARGE_INPUT || 1);
-        });
-      }
-
-      // Update link force parameters if present
-      const linkForce = this.simulation && this.simulation.force("link");
-      if (linkForce && linkForce.distance) {
-        // keep distance as function so it will pick up updated FORCE_CONFIG
-        linkForce.distance((d) => {
-          // delegate to getCustomLinkDistance which uses latest controls
-          return self.getCustomLinkDistance(d);
-        });
-      }
-      if (linkForce && linkForce.strength) {
-        linkForce.strength((d) => {
-          // prefer per-link zoom strength if defined, otherwise use link.strength
-          return self.getLinkStrength(d);
-        });
-      }
-
-      // Update collision radius according to size control
-      const collide = this.simulation && this.simulation.force("collision");
-      if (collide && collide.radius) {
-        collide.radius((d) => {
-          return (
-            Math.sqrt(d.importance || NODE_DEFAULTS.IMPORTANCE) *
-            (this.sizeInput || NODE_DEFAULTS.RADIUS_MULTIPLIER)
+      FORCE_CONFIG.GRAV_INPUT = read(
+        "gravInput",
+        FORCE_CONFIG.GRAV_INPUT || 15,
+      );
+      FORCE_CONFIG.SIZE_INPUT = read(
+        "sizeInput",
+        FORCE_CONFIG.SIZE_INPUT || NODE_DEFAULTS.RADIUS_MULTIPLIER,
+      );
+      // update dynamic force callbacks where necessary
+      if (self.simulation) {
+        const ch = self.simulation.force("charge");
+        if (ch && ch.strength)
+          ch.strength(
+            (d) =>
+              -Math.pow(d.importance || NODE_DEFAULTS.IMPORTANCE, 2.1) *
+              (FORCE_CONFIG.CHARGE_INPUT || 1),
           );
-        });
+        const coll = self.simulation.force("collision");
+        if (coll && coll.radius)
+          coll.radius(
+            (d) =>
+              Math.sqrt(d.importance || NODE_DEFAULTS.IMPORTANCE) *
+              (FORCE_CONFIG.SIZE_INPUT || NODE_DEFAULTS.RADIUS_MULTIPLIER),
+          );
+        // visual update
+        self.nodeGroup
+          .selectAll("circle")
+          .attr(
+            "r",
+            (d) =>
+              Math.sqrt(d.importance) *
+              (FORCE_CONFIG.SIZE_INPUT || NODE_DEFAULTS.RADIUS_MULTIPLIER),
+          );
+        self.linkGroup
+          .selectAll("line")
+          .attr(
+            "stroke-width",
+            (d) =>
+              (d.strength || LINK_DEFAULTS.STRENGTH) *
+              (FORCE_CONFIG.SIZE_INPUT || NODE_DEFAULTS.RADIUS_MULTIPLIER),
+          );
+        if (self.simulation.alpha() < 0.02)
+          self.simulation.alpha(0.08).restart();
       }
-
-      // Update gravity inputs in our custom gravity force via FORCE_CONFIG.GRAV_INPUT,
-      // the gravity custom force references FORCE_CONFIG.GRAV_INPUT at runtime.
-
-      // Wake simulation mildly so changes animate in (but keep it stable)
-      if (this.simulation) {
-        const a = Math.max(
-          0.06,
-          Math.min(0.18, this.simulation.alpha() + 0.06),
-        );
-        this.simulation.alpha(a).restart();
-      }
-
-      // Also update visuals that depend on size
-      this.nodeGroup
-        .selectAll("circle")
-        .attr(
-          "r",
-          (d) =>
-            Math.sqrt(d.importance) *
-            (this.sizeInput || NODE_DEFAULTS.RADIUS_MULTIPLIER),
-        );
-      // Links and markers that depend on size should be updated where they're rendered.
     };
-
-    // Attach listeners to inputs (change + input for responsive updates)
-    const ids = [
+    [
       "linkDistMult",
       "linkStrInput",
       "linkSStrInput",
@@ -681,135 +548,93 @@ export class GraphRenderer {
       "ChargeInput",
       "gravInput",
       "sizeInput",
-    ];
-    ids.forEach((id) => {
+    ].forEach((id) => {
       const el = document.getElementById(id);
-      if (el) {
-        el.addEventListener("input", applyValues);
-        el.addEventListener("change", applyValues);
-      }
+      if (!el) return;
+      el.addEventListener("input", apply);
+      el.addEventListener("change", apply);
     });
-
-    // Initial application
-    applyValues();
+    apply();
   }
 
-  getLinkStrength(link) {
-    const zoomLevel = (link && link.zoomLevel) || NODE_DEFAULTS.ZOOM_LEVEL || 0;
-    return (
-      (link && (link[`strength${zoomLevel}`] || link.strength)) ||
-      LINK_DEFAULTS.STRENGTH
-    );
-  }
-
-  getCustomLinkDistance(link) {
-    // Base distance scaled by link strength with UI-controlled density multiplier.
-    const baseDistance = LINK_DEFAULTS.DISTANCE || 100;
-    const strength = link && (link.strength || LINK_DEFAULTS.STRENGTH);
-    // linkDistMult historically was a percentage-like multiplier (e.g. 100.4). Use it as a percent factor.
-    const mult =
-      (this.linkDistMult || FORCE_CONFIG.LINK_DIST_MULT || 100) / 100;
-    // Use sqrt of strength to moderate growth; apply density multiplier and clamp a small floor
-    const dist = baseDistance * Math.sqrt(Math.max(0.1, strength)) * mult;
-    return Math.max(20, dist); // avoid tiny distances
-  }
-
-  applyCustomConstraints(node) {
-    // If phantom nodes exist in the app, treat them as fixed
-    if (node.phantom) {
-      node.fixed = true;
-    }
-
-    // Keep nodes within bounds with padding based on importance
-    const padding =
-      Math.sqrt(node.importance || NODE_DEFAULTS.IMPORTANCE) *
-        NODE_DEFAULTS.RADIUS_MULTIPLIER +
-      5;
-    node.x = Math.max(padding, Math.min(this.width - padding, node.x));
-    node.y = Math.max(padding, Math.min(this.height - padding, node.y));
-  }
-
-  // ---------------------------
-  // Graph rendering and updates
-  // ---------------------------
+  // update graph data and visuals
   updateGraph(nodes, links) {
-    // Preserve selection
     const selectedId = this.selectedItem ? this.selectedItem._id : null;
-
-    // Clear previous shapes
     this.linkGroup.selectAll("*").remove();
     this.nodeGroup.selectAll("*").remove();
 
-    // Ensure simulation exists
-    if (!this.simulation) {
-      this.setupForceSimulation();
-    }
+    // ensure sim exists
+    if (!this.simulation) this.setupForceSimulation();
 
-    // Normalize links: replace ids with node objects if necessary
-    links.forEach((link) => {
-      link.strength = link.strength || LINK_DEFAULTS.STRENGTH;
-      link.oriented =
-        link.oriented !== undefined ? link.oriented : LINK_DEFAULTS.ORIENTED;
-      link.minDist =
-        link.minDist || 30 + (link.strength || LINK_DEFAULTS.STRENGTH) * 5;
-
-      if (typeof link.source === "string") {
-        link.source = nodes.find((n) => n._id === link.source);
-      }
-      if (typeof link.target === "string") {
-        link.target = nodes.find((n) => n._id === link.target);
-      }
+    // normalize links: resolve ids -> node objects
+    links.forEach((l) => {
+      l.strength = l.strength || LINK_DEFAULTS.STRENGTH;
+      l.oriented =
+        l.oriented !== undefined ? l.oriented : LINK_DEFAULTS.ORIENTED;
+      l.minDist = l.minDist || 30 + (l.strength || LINK_DEFAULTS.STRENGTH) * 5;
+      if (typeof l.source === "string")
+        l.source = nodes.find((n) => n._id === l.source);
+      if (typeof l.target === "string")
+        l.target = nodes.find((n) => n._id === l.target);
     });
 
-    // Set up node defaults
-    nodes.forEach((node) => {
-      node.importance = node.importance || NODE_DEFAULTS.IMPORTANCE;
-      node.parMinLen = [null, Infinity];
-      node.chiMinLen = [null, Infinity];
+    nodes.forEach((n) => {
+      n.importance = n.importance || NODE_DEFAULTS.IMPORTANCE;
     });
 
-    // Render and bind DOM elements
-    this.renderLinks(links, nodes);
-    this.renderNodes(nodes);
-
-    // Update simulation nodes and link force links
     this.currentNodes = nodes;
     this.currentLinks = links;
 
+    this.renderLinks(links, nodes);
+    this.renderNodes(nodes);
+
+    // attach nodes to simulation & let custom force reference this.currentLinks
     if (this.simulation) {
       this.simulation.nodes(nodes);
-      const linkForce = this.simulation.force("link");
-      if (linkForce && linkForce.links) {
-        linkForce.links(links);
-      }
-
-      // Initialize custom forces which may have grabbed link references on initialize
-      const gravity = this.simulation.force("gravity");
-      if (gravity && gravity.initialize) gravity.initialize(nodes);
-      const orient = this.simulation.force("orientation");
-      if (orient && orient.initialize) orient.initialize(nodes);
-      const springs = this.simulation.force("springs");
-      if (springs && springs.initialize) springs.initialize(nodes);
-
-      // Only restart if simulation is nearly idle and we're not within the post-save blocking window.
-      // If a server save was recently initiated, reactive updates may follow; avoid auto-restarting
-      // the simulation until the saving window expires or the save completes.
+      // guard automatic restart if saving coordinates (prevent save->reactive->restart loop)
       const now = Date.now();
       const savingActive =
         this._savingCoordinatesUntil && now < this._savingCoordinatesUntil;
-      if (!savingActive && this.simulation.alpha() < 0.005) {
-        // use a lower restart alpha so the simulation doesn't become wildly energetic
-        this.simulation.alpha(0.15).restart();
+      // if we have a last-saved snapshot and incoming positions match it, do not restart
+      let shouldRestart = true;
+      if (
+        this._lastSavedPositions &&
+        this._lastSavedPositionsUntil &&
+        now < this._lastSavedPositionsUntil
+      ) {
+        const EPS = 1.2;
+        let allMatch = true;
+        for (let i = 0; i < nodes.length; i++) {
+          const n = nodes[i];
+          const snap =
+            this._lastSavedPositions && n && this._lastSavedPositions[n._id];
+          if (
+            !snap ||
+            Math.abs((n.x || 0) - snap.x) > EPS ||
+            Math.abs((n.y || 0) - snap.y) > EPS
+          ) {
+            allMatch = false;
+            break;
+          }
+        }
+        if (allMatch) {
+          shouldRestart = false;
+        } else {
+          this._lastSavedPositions = null;
+          this._lastSavedPositionsUntil = 0;
+        }
+      } else if (savingActive) {
+        shouldRestart = false;
       }
+
+      if (shouldRestart && this.simulation.alpha() < 0.005)
+        this.simulation.alpha(0.15).restart();
     }
 
-    // Restore selection
-    if (selectedId) {
-      this.restoreSelection(selectedId, nodes, links);
-    }
+    if (selectedId) this.restoreSelection(selectedId, nodes, links);
   }
 
-  renderLinks(links, nodes) {
+  renderLinks(links) {
     this.linkGroup
       .selectAll("line")
       .data(links)
@@ -826,48 +651,19 @@ export class GraphRenderer {
       .attr("x2", (d) => (d.target && d.target.x) || 0)
       .attr("y2", (d) => (d.target && d.target.y) || 0)
       .style("cursor", "pointer")
-      .style("marker-mid", (d) => {
-        return d.oriented &&
-          d.type !== "derivation" &&
-          d.type !== "used" &&
-          d.type !== "specialCase"
+      .style("marker-mid", (d) =>
+        d.oriented &&
+        d.type !== "derivation" &&
+        d.type !== "used" &&
+        d.type !== "specialCase"
           ? `url(#${ARROW_CONFIG.MARKER_ID})`
-          : null;
-      })
+          : null,
+      )
       .on("click", (event, d) => {
         event.stopPropagation();
         this.selectItem(d);
-        this.onLinkClick(d);
+        this.onLinkClick && this.onLinkClick(d);
       });
-  }
-
-  toggleLinkOrientation(linkData) {
-    const newOriented = !linkData.oriented;
-    linkData.oriented = newOriented;
-
-    // Update the visual representation
-    this.linkGroup
-      .selectAll("line")
-      .filter((d) => d._id === linkData._id)
-      .attr("class", (d) => {
-        let classes = "link";
-        if (d.type) classes += ` ${d.type}`;
-        if (d.oriented) classes += " oriented";
-        return classes;
-      })
-      .style("marker-mid", (d) => {
-        return d.oriented &&
-          d.type !== "derivation" &&
-          d.type !== "used" &&
-          d.type !== "specialCase"
-          ? `url(#${ARROW_CONFIG.MARKER_ID})`
-          : null;
-      });
-
-    // Call server method to persist the change
-    if (this.onLinkOrient) {
-      this.onLinkOrient(linkData._id, newOriented);
-    }
   }
 
   renderNodes(nodes) {
@@ -881,22 +677,24 @@ export class GraphRenderer {
       .attr("cy", (d) => d.y)
       .attr(
         "r",
-        (d) => Math.sqrt(d.importance) * NODE_DEFAULTS.RADIUS_MULTIPLIER,
+        (d) =>
+          Math.sqrt(d.importance) *
+          (FORCE_CONFIG.SIZE_INPUT || NODE_DEFAULTS.RADIUS_MULTIPLIER),
       )
       .attr("fill", COLORS.NODE_DEFAULT)
       .style("cursor", this.isAdminMode ? "move" : "pointer")
-      .call(this.createDragBehavior())
+      .call(this.forceDrag)
       .on("dblclick", (event, d) => {
         if (!this.isDraggingForLink) {
           event.stopPropagation();
-          this.onNodeDoubleClick(d);
+          this.onNodeDoubleClick && this.onNodeDoubleClick(d);
         }
       })
       .on("click", (event, d) => {
         if (!event.defaultPrevented && !this.isDraggingForLink) {
           event.stopPropagation();
           this.selectItem(d);
-          this.onNodeClick(d);
+          this.onNodeClick && this.onNodeClick(d);
         }
       });
 
@@ -916,17 +714,12 @@ export class GraphRenderer {
   }
 
   createDragBehavior() {
-    // Return the shared drag behavior created in setupForceSimulation
-    if (!this.forceDrag) {
-      this.setupForceSimulation();
-    }
     return this.forceDrag;
   }
 
   startLinkCreation(event, node) {
     this.isDraggingForLink = true;
     this.dragStartNode = node;
-
     this.tempLine = this.svg
       .append("line")
       .attr("x1", node.x)
@@ -939,9 +732,7 @@ export class GraphRenderer {
   }
 
   updateTempLine(x, y) {
-    if (this.tempLine) {
-      this.tempLine.attr("x2", x).attr("y2", y);
-    }
+    if (this.tempLine) this.tempLine.attr("x2", x).attr("y2", y);
   }
 
   finishLinkCreation(event) {
@@ -949,34 +740,31 @@ export class GraphRenderer {
       this.tempLine.remove();
       this.tempLine = null;
     }
-
     const targetElement = document.elementFromPoint(
       event.sourceEvent.clientX,
       event.sourceEvent.clientY,
     );
     const targetNode = d3.select(targetElement).datum();
-
     if (targetNode && targetNode._id !== this.dragStartNode._id) {
-      this.onLinkCreate(this.dragStartNode._id, targetNode._id);
+      this.onLinkCreate &&
+        this.onLinkCreate(this.dragStartNode._id, targetNode._id);
     } else {
       const mousePos = d3.pointer(event.sourceEvent, this.svg.node());
-      this.onEmptySpaceClick(mousePos[0], mousePos[1], this.dragStartNode._id);
+      this.onEmptySpaceClick &&
+        this.onEmptySpaceClick(
+          mousePos[0],
+          mousePos[1],
+          this.dragStartNode._id,
+        );
     }
-
     this.isDraggingForLink = false;
     this.dragStartNode = null;
   }
 
-  // ---------------------------
-  // Selection utilities
-  // ---------------------------
   selectItem(itemData) {
     this.selectedItem = itemData;
     this.updateSelectionDisplay();
   }
-
-  selectNode = this.selectItem;
-  selectLink = this.selectItem;
 
   clearAllSelections() {
     this.selectedItem = null;
@@ -986,7 +774,6 @@ export class GraphRenderer {
   updateSelectionDisplay() {
     this.nodeGroup.selectAll("circle").classed("node_selected", false);
     this.linkGroup.selectAll("line").classed("link_selected", false);
-
     if (this.selectedItem) {
       if (this.selectedItem.source) {
         this.linkGroup
@@ -1003,12 +790,8 @@ export class GraphRenderer {
   restoreSelection(selectedId, nodes, links) {
     const selectedNode = nodes.find((n) => n._id === selectedId);
     const selectedLink = links.find((l) => l._id === selectedId);
-
-    if (selectedNode) {
-      this.selectedItem = selectedNode;
-    } else if (selectedLink) {
-      this.selectedItem = selectedLink;
-    }
+    if (selectedNode) this.selectedItem = selectedNode;
+    else if (selectedLink) this.selectedItem = selectedLink;
     this.updateSelectionDisplay();
   }
 
@@ -1022,18 +805,35 @@ export class GraphRenderer {
     );
   }
 
+  toggleLinkOrientation(linkData) {
+    linkData.oriented = !linkData.oriented;
+    this.linkGroup
+      .selectAll("line")
+      .filter((d) => d._id === linkData._id)
+      .attr("class", (d) => {
+        let classes = "link";
+        if (d.type) classes += ` ${d.type}`;
+        if (d.oriented) classes += " oriented";
+        return classes;
+      })
+      .style("marker-mid", (d) =>
+        d.oriented &&
+        d.type !== "derivation" &&
+        d.type !== "used" &&
+        d.type !== "specialCase"
+          ? `url(#${ARROW_CONFIG.MARKER_ID})`
+          : null,
+      );
+    if (this.onLinkOrient) this.onLinkOrient(linkData._id, linkData.oriented);
+  }
+
   reverseLinkDirection(linkData) {
-    const temp = linkData.source;
+    const tmp = linkData.source;
     linkData.source = linkData.target;
-    linkData.target = temp;
-
-    if (this.onLinkReverse) {
-      this.onLinkReverse(linkData._id);
-    }
-
-    if (this.simulation && this.simulation.alpha() < 0.005) {
+    linkData.target = tmp;
+    if (this.onLinkReverse) this.onLinkReverse(linkData._id);
+    if (this.simulation && this.simulation.alpha() < 0.005)
       this.simulation.alpha(0.1).restart();
-    }
   }
 
   setAdminMode(isAdmin) {
