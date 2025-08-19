@@ -87,23 +87,42 @@ export class GraphRenderer {
   }
 
   setupKeyboardHandlers() {
-    d3.select(window).on("keydown", (event) => {
-      if (!this.selectedItem || !this.isAdminMode) return;
-      if (event.ctrlKey || event.metaKey) {
-        switch (event.keyCode) {
-          case KEYBOARD_SHORTCUTS.CTRL_O:
-            event.preventDefault();
-            if (this.selectedItem.source)
-              this.toggleLinkOrientation(this.selectedItem);
-            break;
-          case KEYBOARD_SHORTCUTS.CTRL_R:
-            event.preventDefault();
-            if (this.selectedItem.source)
-              this.reverseLinkDirection(this.selectedItem);
-            break;
-        }
+    // Ensure we don't attach multiple listeners
+    if (this._keyHandler) {
+      try {
+        window.removeEventListener("keydown", this._keyHandler, true);
+      } catch (e) {}
+      this._keyHandler = null;
+    }
+    const handler = (event) => {
+      // handle only Cmd/Ctrl combos
+      if (!(event.ctrlKey || event.metaKey)) return;
+      // only act in admin mode and when a link is selected
+      if (!this.isAdminMode || !this.selectedItem || !this.selectedItem.source)
+        return;
+      // allow both `event.key` and keyCode fallbacks
+      const k = (event.key || "").toLowerCase();
+      const code = event.keyCode || 0;
+      if (k === "o" || code === 79) {
+        // intercept before browser default and other handlers
+        event.preventDefault();
+        try {
+          event.stopImmediatePropagation();
+        } catch (e) {}
+        event.stopPropagation();
+        this.toggleLinkOrientation(this.selectedItem);
+      } else if (k === "r" || code === 82) {
+        event.preventDefault();
+        try {
+          event.stopImmediatePropagation();
+        } catch (e) {}
+        event.stopPropagation();
+        this.reverseLinkDirection(this.selectedItem);
       }
-    });
+    };
+    // attach once (avoid duplicate listeners)
+    window.addEventListener("keydown", handler, true);
+    this._keyHandler = handler;
   }
 
   setupForceSimulation() {
@@ -319,9 +338,12 @@ export class GraphRenderer {
           this.startLinkCreation && this.startLinkCreation(event, d);
           return;
         }
+        // begin dragging: mark and fix coordinates so physics won't move node
         this.isDragging = true;
         this.dragNode = d;
         d.dragging = true;
+        d.fx = d.x;
+        d.fy = d.y;
         if (!event.active && this.simulation)
           this.simulation
             .alphaTarget(FORCE_CONFIG.ALPHA_TARGET_ACTIVE || 0.1)
@@ -332,8 +354,9 @@ export class GraphRenderer {
           this.updateTempLine && this.updateTempLine(event.x, event.y);
           return;
         }
-        d.x = event.x;
-        d.y = event.y;
+        // while dragging, keep node fixed to pointer coordinates
+        d.fx = event.x;
+        d.fy = event.y;
         if (this.simulation && this.simulation.alpha() < 0.1)
           this.simulation.alpha(0.1);
       })
@@ -341,12 +364,50 @@ export class GraphRenderer {
         if (this.isDraggingForLink) {
           this.finishLinkCreation && this.finishLinkCreation(event);
         } else {
+          // clear dragging state
           this.isDragging = false;
           this.dragNode = null;
           d.dragging = false;
+          // if node is permanently fixed keep its fx/fy, if hover-fixed keep them, otherwise release
+          if (d.permFixed) {
+            d.fixed = true;
+            d.fx = d.x;
+            d.fy = d.y;
+          } else if (d._hoverFixed) {
+            // remain fixed while hovered
+            d.fixed = true;
+            d.fx = d.x;
+            d.fy = d.y;
+          } else {
+            // release so physics will affect the node again
+            d.fixed = false;
+            d.fx = null;
+            d.fy = null;
+          }
+          // ensure minimal velocity so it participates in solver
+          d.vx = d.vx || 0;
+          d.vy = d.vy || 0;
+          // update stroke to indicate permanent/fixed status
+          try {
+            this.nodeGroup
+              .selectAll("circle")
+              .filter((n) => n && n._id === d._id)
+              .attr("stroke", d.permFixed || d.fixed ? "red" : "black")
+              .attr(
+                "stroke-width",
+                d.permFixed || d.fixed
+                  ? STROKE_WIDTHS.DRAG_HIGHLIGHT
+                  : STROKE_WIDTHS.DEFAULT,
+              );
+          } catch (e) {}
           if (this.isAdminMode && this.onNodeDragEnd)
             this.onNodeDragEnd(d._id, d.x, d.y);
-          if (!event.active && this.simulation) this.simulation.alphaTarget(0);
+          if (!event.active && this.simulation) {
+            this.simulation.alphaTarget(0);
+            this.simulation
+              .alpha(Math.max(this.simulation.alpha(), 0.05))
+              .restart();
+          }
         }
       });
   }
@@ -682,8 +743,57 @@ export class GraphRenderer {
           (FORCE_CONFIG.SIZE_INPUT || NODE_DEFAULTS.RADIUS_MULTIPLIER),
       )
       .attr("fill", COLORS.NODE_DEFAULT)
+      .attr("stroke", (d) => (d.permFixed || d.fixed ? "red" : "black"))
+      .attr("stroke-width", (d) =>
+        d.permFixed || d.fixed
+          ? STROKE_WIDTHS.DRAG_HIGHLIGHT
+          : STROKE_WIDTHS.DEFAULT,
+      )
       .style("cursor", this.isAdminMode ? "move" : "pointer")
       .call(this.forceDrag)
+      .on("mouseover", (event, d) => {
+        // temporarily fix while hovering (only if not permanently fixed)
+        if (!d.permFixed) {
+          d._hoverFixed = true;
+          d.fixed = true;
+          d.fx = d.x;
+          d.fy = d.y;
+          d3.select(event.currentTarget)
+            .attr("stroke", "red")
+            .attr("stroke-width", STROKE_WIDTHS.DRAG_HIGHLIGHT);
+        }
+      })
+      .on("mouseout", (event, d) => {
+        // remove hover-fix unless it is permanent or node is being dragged
+        if (!d.permFixed) {
+          d._hoverFixed = false;
+          if (!d.dragging) {
+            d.fixed = false;
+            d.fx = null;
+            d.fy = null;
+            d3.select(event.currentTarget)
+              .attr("stroke", "black")
+              .attr("stroke-width", STROKE_WIDTHS.DEFAULT);
+          }
+        }
+      })
+      .on("contextmenu", (event, d) => {
+        // right-click to permanently fix in client; persist to server in admin mode
+        event.preventDefault();
+        d.permFixed = true;
+        d.fixed = true;
+        d.fx = d.x;
+        d.fy = d.y;
+        d3.select(event.currentTarget)
+          .attr("stroke", "red")
+          .attr("stroke-width", STROKE_WIDTHS.DRAG_HIGHLIGHT);
+        if (this.isAdminMode && typeof Meteor !== "undefined" && Meteor.call) {
+          // server method should store permanent fixed state (assumed to exist)
+          Meteor.call("setPermanentFixed", d._id, true, (err) => {
+            if (err) console.error("Failed to persist permFixed:", err);
+          });
+        }
+      })
       .on("dblclick", (event, d) => {
         if (!this.isDraggingForLink) {
           event.stopPropagation();
